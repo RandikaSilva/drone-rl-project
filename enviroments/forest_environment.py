@@ -8,7 +8,6 @@ Usage (FROM IsaacLab directory):
 """
 
 import argparse
-import os
 import random
 import math
 
@@ -35,8 +34,7 @@ simulation_app = app_launcher.app
 print(f"Loading forest environment with {NUM_TREES} trees...\n")
 
 import isaaclab.sim as sim_utils
-from pxr import UsdGeom, Gf, UsdLux
-import omni.kit.commands
+from pxr import UsdGeom, Gf, UsdLux, UsdShade, Sdf
 import omni.usd
 
 # Create simulation context
@@ -46,6 +44,22 @@ sim.set_camera_view([0.0, -40.0, 20.0], [0.0, 0.0, 0.0])
 
 # Get stage
 stage = omni.usd.get_context().get_stage()
+
+
+def create_material(stage, mat_path, color):
+    """Create a UsdPreviewSurface material visible in RTX renderer.
+
+    displayColor only works in Storm/HydraGL. Isaac Sim uses RTX by default,
+    which requires proper UsdShade materials to render geometry.
+    """
+    material = UsdShade.Material.Define(stage, mat_path)
+    shader = UsdShade.Shader.Define(stage, f"{mat_path}/Shader")
+    shader.CreateIdAttr("UsdPreviewSurface")
+    shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(*color))
+    shader.CreateInput("roughness", Sdf.ValueTypeNames.Float).Set(0.8)
+    shader.CreateInput("metallic", Sdf.ValueTypeNames.Float).Set(0.0)
+    material.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
+    return material
 
 
 def generate_tree_positions(num_trees, area_size, min_spacing, seed=None):
@@ -83,7 +97,8 @@ def generate_tree_positions(num_trees, area_size, min_spacing, seed=None):
     return positions
 
 
-def add_tree_procedural(stage, prim_path, position, rotation=0, scale=1.0, tree_type="pine"):
+def add_tree_procedural(stage, prim_path, position, rotation=0, scale=1.0,
+                        tree_type="pine", trunk_material=None, canopy_material=None):
     """Add a procedural tree at the specified position.
 
     Tree types:
@@ -91,23 +106,16 @@ def add_tree_procedural(stage, prim_path, position, rotation=0, scale=1.0, tree_
         - oak: thicker trunk + sphere canopy
         - palm: tall thin trunk + flattened sphere crown
     """
-    # Create Xform container for the tree
-    omni.kit.commands.execute(
-        "CreatePrimWithDefaultXform",
-        prim_type="Xform",
-        prim_path=prim_path,
-    )
-
-    tree_prim = stage.GetPrimAtPath(prim_path)
-    xformable = UsdGeom.Xformable(tree_prim)
-    xformable.ClearXformOpOrder()
+    # Create Xform container using direct USD API (more reliable than omni.kit.commands)
+    tree_xform = UsdGeom.Xform.Define(stage, prim_path)
+    tree_prim = tree_xform.GetPrim()
 
     # Position the tree
-    translate_op = xformable.AddTranslateOp()
+    translate_op = tree_xform.AddTranslateOp()
     translate_op.Set(Gf.Vec3d(position[0], position[1], 0))
 
     # Scale
-    scale_op = xformable.AddScaleOp()
+    scale_op = tree_xform.AddScaleOp()
     scale_op.Set(Gf.Vec3d(scale, scale, scale))
 
     if tree_type == "pine":
@@ -121,19 +129,19 @@ def add_tree_procedural(stage, prim_path, position, rotation=0, scale=1.0, tree_
         trunk = UsdGeom.Cylinder.Define(stage, f"{prim_path}/Trunk")
         trunk.CreateHeightAttr(trunk_height)
         trunk.CreateRadiusAttr(trunk_radius)
-        trunk.CreateDisplayColorAttr([(0.4, 0.25, 0.1)])  # Brown
-
-        trunk_xform = UsdGeom.Xformable(trunk)
+        trunk_xform = UsdGeom.Xformable(trunk.GetPrim())
         trunk_xform.AddTranslateOp().Set(Gf.Vec3d(0, 0, trunk_height / 2))
+        if trunk_material:
+            UsdShade.MaterialBindingAPI(trunk.GetPrim()).Bind(trunk_material)
 
         # Create canopy (cone)
         canopy = UsdGeom.Cone.Define(stage, f"{prim_path}/Canopy")
         canopy.CreateHeightAttr(canopy_height)
         canopy.CreateRadiusAttr(canopy_radius)
-        canopy.CreateDisplayColorAttr([(0.1, 0.5, 0.15)])  # Dark green
-
-        canopy_xform = UsdGeom.Xformable(canopy)
+        canopy_xform = UsdGeom.Xformable(canopy.GetPrim())
         canopy_xform.AddTranslateOp().Set(Gf.Vec3d(0, 0, trunk_height + canopy_height / 2))
+        if canopy_material:
+            UsdShade.MaterialBindingAPI(canopy.GetPrim()).Bind(canopy_material)
 
     elif tree_type == "oak":
         # Oak tree: thicker trunk + sphere canopy
@@ -145,18 +153,18 @@ def add_tree_procedural(stage, prim_path, position, rotation=0, scale=1.0, tree_
         trunk = UsdGeom.Cylinder.Define(stage, f"{prim_path}/Trunk")
         trunk.CreateHeightAttr(trunk_height)
         trunk.CreateRadiusAttr(trunk_radius)
-        trunk.CreateDisplayColorAttr([(0.35, 0.2, 0.1)])  # Dark brown
-
-        trunk_xform = UsdGeom.Xformable(trunk)
+        trunk_xform = UsdGeom.Xformable(trunk.GetPrim())
         trunk_xform.AddTranslateOp().Set(Gf.Vec3d(0, 0, trunk_height / 2))
+        if trunk_material:
+            UsdShade.MaterialBindingAPI(trunk.GetPrim()).Bind(trunk_material)
 
         # Create canopy (sphere)
         canopy = UsdGeom.Sphere.Define(stage, f"{prim_path}/Canopy")
         canopy.CreateRadiusAttr(canopy_radius)
-        canopy.CreateDisplayColorAttr([(0.2, 0.6, 0.2)])  # Green
-
-        canopy_xform = UsdGeom.Xformable(canopy)
+        canopy_xform = UsdGeom.Xformable(canopy.GetPrim())
         canopy_xform.AddTranslateOp().Set(Gf.Vec3d(0, 0, trunk_height + canopy_radius * 0.8))
+        if canopy_material:
+            UsdShade.MaterialBindingAPI(canopy.GetPrim()).Bind(canopy_material)
 
     elif tree_type == "palm":
         # Palm tree: tall thin trunk + flattened sphere crown
@@ -167,19 +175,19 @@ def add_tree_procedural(stage, prim_path, position, rotation=0, scale=1.0, tree_
         trunk = UsdGeom.Cylinder.Define(stage, f"{prim_path}/Trunk")
         trunk.CreateHeightAttr(trunk_height)
         trunk.CreateRadiusAttr(trunk_radius)
-        trunk.CreateDisplayColorAttr([(0.5, 0.35, 0.2)])  # Light brown
-
-        trunk_xform = UsdGeom.Xformable(trunk)
+        trunk_xform = UsdGeom.Xformable(trunk.GetPrim())
         trunk_xform.AddTranslateOp().Set(Gf.Vec3d(0, 0, trunk_height / 2))
+        if trunk_material:
+            UsdShade.MaterialBindingAPI(trunk.GetPrim()).Bind(trunk_material)
 
         # Create crown (flattened sphere)
         crown = UsdGeom.Sphere.Define(stage, f"{prim_path}/Canopy")
         crown.CreateRadiusAttr(1.5)
-        crown.CreateDisplayColorAttr([(0.15, 0.55, 0.15)])  # Green
-
-        crown_xform = UsdGeom.Xformable(crown)
+        crown_xform = UsdGeom.Xformable(crown.GetPrim())
         crown_xform.AddTranslateOp().Set(Gf.Vec3d(0, 0, trunk_height + 0.5))
         crown_xform.AddScaleOp().Set(Gf.Vec3d(1.5, 1.5, 0.5))
+        if canopy_material:
+            UsdShade.MaterialBindingAPI(crown.GetPrim()).Bind(canopy_material)
 
     return tree_prim
 
@@ -195,12 +203,34 @@ xform.AddRotateYOp().Set(30)
 dome_light = UsdLux.DomeLight.Define(stage, "/World/DomeLight")
 dome_light.CreateIntensityAttr(500)
 
-# Create forest container
-omni.kit.commands.execute(
-    "CreatePrimWithDefaultXform",
-    prim_type="Xform",
-    prim_path="/World/Forest",
-)
+# Create forest container using direct USD API
+UsdGeom.Xform.Define(stage, "/World/Forest")
+
+# Create shared materials (RTX renderer requires UsdShade materials, not displayColor)
+print("Creating materials...")
+materials_path = "/World/Materials"
+UsdGeom.Xform.Define(stage, materials_path)
+
+# Trunk materials (brown variants)
+mat_trunk_pine = create_material(stage, f"{materials_path}/TrunkPine", (0.4, 0.25, 0.1))
+mat_trunk_oak = create_material(stage, f"{materials_path}/TrunkOak", (0.35, 0.2, 0.1))
+mat_trunk_palm = create_material(stage, f"{materials_path}/TrunkPalm", (0.5, 0.35, 0.2))
+
+# Canopy materials (green variants)
+mat_canopy_pine = create_material(stage, f"{materials_path}/CanopyPine", (0.1, 0.5, 0.15))
+mat_canopy_oak = create_material(stage, f"{materials_path}/CanopyOak", (0.2, 0.6, 0.2))
+mat_canopy_palm = create_material(stage, f"{materials_path}/CanopyPalm", (0.15, 0.55, 0.15))
+
+TRUNK_MATERIALS = {
+    "pine": mat_trunk_pine,
+    "oak": mat_trunk_oak,
+    "palm": mat_trunk_palm,
+}
+CANOPY_MATERIALS = {
+    "pine": mat_canopy_pine,
+    "oak": mat_canopy_oak,
+    "palm": mat_canopy_palm,
+}
 
 # Generate tree positions
 print(f"Generating {NUM_TREES} tree positions...")
@@ -225,7 +255,11 @@ for i, (x, y) in enumerate(tree_positions):
     scale = random.uniform(0.8, 1.2)
 
     try:
-        tree_prim = add_tree_procedural(stage, prim_path, (x, y), 0, scale, tree_type)
+        tree_prim = add_tree_procedural(
+            stage, prim_path, (x, y), 0, scale, tree_type,
+            trunk_material=TRUNK_MATERIALS[tree_type],
+            canopy_material=CANOPY_MATERIALS[tree_type],
+        )
         trees.append(tree_prim)
         tree_type_counts[tree_type] += 1
         print(f"   Tree {i+1:2d}: {tree_type:5s} at ({x:6.2f}, {y:6.2f}), scale {scale:.2f}")
@@ -246,16 +280,14 @@ ground.CreatePointsAttr([
 ])
 ground.CreateFaceVertexCountsAttr([4])
 ground.CreateFaceVertexIndicesAttr([0, 1, 2, 3])
-ground.CreateDisplayColorAttr([(0.3, 0.5, 0.2)])  # Grass green
+mat_ground = create_material(stage, f"{materials_path}/Ground", (0.3, 0.5, 0.2))
+UsdShade.MaterialBindingAPI(ground.GetPrim()).Bind(mat_ground)
 
 # Add boundary markers
 print("Adding boundary markers...")
 boundary_prim_path = "/World/Boundaries"
-omni.kit.commands.execute(
-    "CreatePrimWithDefaultXform",
-    prim_type="Xform",
-    prim_path=boundary_prim_path,
-)
+UsdGeom.Xform.Define(stage, boundary_prim_path)
+mat_marker = create_material(stage, f"{materials_path}/BoundaryMarker", (1.0, 0.3, 0.3))
 
 # Corner markers
 half_size = FOREST_SIZE / 2
@@ -271,25 +303,27 @@ for i, (cx, cy) in enumerate(corners):
     marker = UsdGeom.Cylinder.Define(stage, marker_path)
     marker.CreateRadiusAttr(0.3)
     marker.CreateHeightAttr(3.0)
-    marker.CreateDisplayColorAttr([(1.0, 0.3, 0.3)])  # Red markers
 
-    xformable = UsdGeom.Xformable(marker)
+    xformable = UsdGeom.Xformable(marker.GetPrim())
     translate_op = xformable.AddTranslateOp()
     translate_op.Set(Gf.Vec3d(cx, cy, 1.5))
+    UsdShade.MaterialBindingAPI(marker.GetPrim()).Bind(mat_marker)
 
 # Add start position marker (green sphere)
 start_marker = UsdGeom.Sphere.Define(stage, "/World/StartPosition")
 start_marker.CreateRadiusAttr(0.5)
-start_marker.CreateDisplayColorAttr([(0.2, 1.0, 0.2)])  # Green
-xformable = UsdGeom.Xformable(start_marker)
+mat_start = create_material(stage, f"{materials_path}/StartMarker", (0.2, 1.0, 0.2))
+UsdShade.MaterialBindingAPI(start_marker.GetPrim()).Bind(mat_start)
+xformable = UsdGeom.Xformable(start_marker.GetPrim())
 translate_op = xformable.AddTranslateOp()
 translate_op.Set(Gf.Vec3d(-half_size + 2, 0, 2))
 
 # Add goal position marker (blue sphere)
 goal_marker = UsdGeom.Sphere.Define(stage, "/World/GoalPosition")
 goal_marker.CreateRadiusAttr(0.5)
-goal_marker.CreateDisplayColorAttr([(0.2, 0.2, 1.0)])  # Blue
-xformable = UsdGeom.Xformable(goal_marker)
+mat_goal = create_material(stage, f"{materials_path}/GoalMarker", (0.2, 0.2, 1.0))
+UsdShade.MaterialBindingAPI(goal_marker.GetPrim()).Bind(mat_goal)
+xformable = UsdGeom.Xformable(goal_marker.GetPrim())
 translate_op = xformable.AddTranslateOp()
 translate_op.Set(Gf.Vec3d(half_size - 2, 0, 2))
 
