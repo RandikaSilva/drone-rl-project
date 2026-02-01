@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cat:*)",
+      "Bash(conda info:*)",
+      "Bash(source:*)",
+      "Bash(conda env list:*)",
+      "Bash(pip3 list:*)",
+      "Bash(./isaaclab.sh:*)",
+      "Bash(python3:*)",
+      "Bash(pip install:*)",
+      "Bash(ls:*)",
+      "Bash(ACCEPT_EULA=Yes ./isaaclab.sh:*)"
+    ]
+  }
+}
