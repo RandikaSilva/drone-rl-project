@@ -1,0 +1,20 @@
+# Training logs and checkpoints
+**/logs/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Isaac Sim/Lab
+*.usd
+*.usda
+*.usdc
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
