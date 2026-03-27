@@ -170,8 +170,8 @@ class ForestNavEnvCfg(DirectRLEnvCfg):
     min_flight_height: float = 0.05
     cruise_altitude: float = 1.5
 
-    takeoff_altitude_tolerance: float = 0.3
-    stabilize_duration: float = 2.0
+    takeoff_altitude_tolerance: float = 0.5
+    stabilize_duration: float = 1.0
     hover_position_tolerance: float = 0.5
     hover_duration: float = 2.0
 
@@ -185,8 +185,8 @@ class ForestNavEnvCfg(DirectRLEnvCfg):
     stabilize_low_speed_scale: float = 2.0
     stabilize_altitude_scale: float = -2.0
     stabilize_ang_vel_scale: float = 1.0
-    nav_xy_progress_scale: float = 3.0
-    nav_velocity_align_scale: float = 8.0
+    nav_xy_progress_scale: float = 15.0
+    nav_velocity_align_scale: float = 12.0
     nav_lateral_penalty_scale: float = -2.0
     nav_altitude_scale: float = -2.0
     nav_stability_scale: float = 3.0
@@ -280,6 +280,27 @@ class ForestNavEnv(DirectRLEnv):
 
     def _pre_physics_step(self, actions: torch.Tensor):
         self._actions = actions.clone().clamp(-1.0, 1.0)
+
+        # ── Auto-pilot for TAKEOFF and STABILIZE phases ──
+        # Override RL actions so the drone reliably reaches cruise altitude
+        altitude = self._robot.data.root_pos_w[:, 2]
+        alt_err_to_cruise = self.cfg.cruise_altitude - altitude
+
+        is_takeoff = self._phase == self.TAKEOFF
+        is_stabilize = self._phase == self.STABILIZE
+
+        # TAKEOFF: command upward velocity proportional to altitude error
+        takeoff_vz = torch.clamp(alt_err_to_cruise * 1.5, 0.1, 1.0)
+        self._actions[is_takeoff, 0] = 0.0
+        self._actions[is_takeoff, 1] = 0.0
+        self._actions[is_takeoff, 2] = takeoff_vz[is_takeoff]
+        self._actions[is_takeoff, 3] = 0.0
+
+        # STABILIZE: hold position (zero velocity)
+        self._actions[is_stabilize, 0] = 0.0
+        self._actions[is_stabilize, 1] = 0.0
+        self._actions[is_stabilize, 2] = torch.clamp(alt_err_to_cruise[is_stabilize] * 0.5, -0.3, 0.3)
+        self._actions[is_stabilize, 3] = 0.0
 
         # ── Decode velocity commands from RL actions ──
         vx_cmd = self._actions[:, 0] * self.cfg.max_velocity_xy
@@ -666,7 +687,7 @@ def train():
             learning_starts=10000,
             batch_size=256,
             tau=0.005,
-            gamma=0.98,
+            gamma=0.99,
             train_freq=1,
             gradient_steps=1,
             ent_coef="auto",

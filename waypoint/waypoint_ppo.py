@@ -179,8 +179,8 @@ class ForestNavEnvCfg(DirectRLEnvCfg):
     min_flight_height: float = 0.05
     cruise_altitude: float = 1.5
 
-    takeoff_altitude_tolerance: float = 0.3
-    stabilize_duration: float = 2.0
+    takeoff_altitude_tolerance: float = 0.5
+    stabilize_duration: float = 1.0
     hover_position_tolerance: float = 0.5
     hover_duration: float = 2.0
 
@@ -194,8 +194,8 @@ class ForestNavEnvCfg(DirectRLEnvCfg):
     stabilize_low_speed_scale: float = 2.0
     stabilize_altitude_scale: float = -2.0
     stabilize_ang_vel_scale: float = 1.0
-    nav_xy_progress_scale: float = 3.0
-    nav_velocity_align_scale: float = 8.0
+    nav_xy_progress_scale: float = 15.0
+    nav_velocity_align_scale: float = 12.0
     nav_lateral_penalty_scale: float = -2.0
     nav_altitude_scale: float = -2.0
     nav_stability_scale: float = 3.0
@@ -289,6 +289,27 @@ class ForestNavEnv(DirectRLEnv):
 
     def _pre_physics_step(self, actions: torch.Tensor):
         self._actions = actions.clone().clamp(-1.0, 1.0)
+
+        # ── Auto-pilot for TAKEOFF and STABILIZE phases ──
+        # Override RL actions so the drone reliably reaches cruise altitude
+        altitude = self._robot.data.root_pos_w[:, 2]
+        alt_err_to_cruise = self.cfg.cruise_altitude - altitude
+
+        is_takeoff = self._phase == self.TAKEOFF
+        is_stabilize = self._phase == self.STABILIZE
+
+        # TAKEOFF: command upward velocity proportional to altitude error
+        takeoff_vz = torch.clamp(alt_err_to_cruise * 1.5, 0.1, 1.0)
+        self._actions[is_takeoff, 0] = 0.0  # no vx
+        self._actions[is_takeoff, 1] = 0.0  # no vy
+        self._actions[is_takeoff, 2] = takeoff_vz[is_takeoff]  # go up
+        self._actions[is_takeoff, 3] = 0.0  # no yaw
+
+        # STABILIZE: hold position (zero velocity)
+        self._actions[is_stabilize, 0] = 0.0
+        self._actions[is_stabilize, 1] = 0.0
+        self._actions[is_stabilize, 2] = torch.clamp(alt_err_to_cruise[is_stabilize] * 0.5, -0.3, 0.3)
+        self._actions[is_stabilize, 3] = 0.0
 
         # ── Decode velocity commands from RL actions ──
         vx_cmd = self._actions[:, 0] * self.cfg.max_velocity_xy
@@ -646,14 +667,14 @@ class ForestNavEnv(DirectRLEnv):
 
 @configclass
 class ForestNavPPORunnerCfg(RslRlOnPolicyRunnerCfg):
-    num_steps_per_env = 64
+    num_steps_per_env = 1024
     max_iterations = 1000
     save_interval = 100
     experiment_name = "crazyflie_forest_nav_ppo"
     empirical_normalization = False
 
     policy = RslRlPpoActorCriticCfg(
-        init_noise_std=0.5,
+        init_noise_std=0.3,
         actor_obs_normalization=True,
         critic_obs_normalization=True,
         actor_hidden_dims=[256, 128, 64],
@@ -665,12 +686,12 @@ class ForestNavPPORunnerCfg(RslRlOnPolicyRunnerCfg):
         value_loss_coef=1.0,
         use_clipped_value_loss=True,
         clip_param=0.2,
-        entropy_coef=0.01,
-        num_learning_epochs=8,
+        entropy_coef=0.0,
+        num_learning_epochs=5,
         num_mini_batches=4,
         learning_rate=1.0e-4,
         schedule="adaptive",
-        gamma=0.98,
+        gamma=0.99,
         lam=0.95,
         desired_kl=0.008,
         max_grad_norm=1.0,
