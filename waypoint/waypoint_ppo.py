@@ -102,12 +102,13 @@ VISIBLE_CRAZYFLIE_CFG = CRAZYFLIE_CFG.replace(
 
 @configclass
 class ForestNavEnvCfg(DirectRLEnvCfg):
-    episode_length_s = 18.0
+    episode_length_s = 30.0
     decimation = 2
     action_space = 4
     observation_space = 26
     state_space = 0
     debug_vis = True
+    randomize_episode_start: bool = True
 
     sim: SimulationCfg = SimulationCfg(
         dt=1 / 100,
@@ -173,16 +174,16 @@ class ForestNavEnvCfg(DirectRLEnvCfg):
     )
     lidar_max_distance: float = 15.0
 
-    goal_threshold: float = 0.5
-    landing_speed_threshold: float = 1.0
+    goal_threshold: float = 1.2
+    landing_speed_threshold: float = 1.2
     max_flight_height: float = 8.0
     min_flight_height: float = 0.05
     cruise_altitude: float = 1.5
 
     takeoff_altitude_tolerance: float = 0.5
     stabilize_duration: float = 1.0
-    hover_position_tolerance: float = 0.5
-    hover_duration: float = 2.0
+    hover_position_tolerance: float = 3.0
+    hover_duration: float = 1.5
 
     static_start_pos: tuple = (-5.0, 0.0, 0.2)
     static_goal_pos: tuple = (5.0, 0.0, 0.2)
@@ -310,6 +311,24 @@ class ForestNavEnv(DirectRLEnv):
         self._actions[is_stabilize, 1] = 0.0
         self._actions[is_stabilize, 2] = torch.clamp(alt_err_to_cruise[is_stabilize] * 0.5, -0.3, 0.3)
         self._actions[is_stabilize, 3] = 0.0
+
+        # ── Auto-pilot for HOVER and LAND phases ──
+        is_hover = self._phase == self.HOVER
+        is_land = self._phase == self.LAND
+        delta_w = self._goal_pos_w - self._robot.data.root_pos_w
+        hover_vx = torch.clamp(delta_w[:, 0] * 0.8, -0.5, 0.5)
+        hover_vy = torch.clamp(delta_w[:, 1] * 0.8, -0.5, 0.5)
+
+        self._actions[is_hover, 0] = hover_vx[is_hover] / self.cfg.max_velocity_xy
+        self._actions[is_hover, 1] = hover_vy[is_hover] / self.cfg.max_velocity_xy
+        self._actions[is_hover, 2] = torch.clamp(alt_err_to_cruise[is_hover] * 0.5, -0.3, 0.3)
+        self._actions[is_hover, 3] = 0.0
+
+        land_vz = torch.clamp(-0.3 * torch.ones_like(altitude), -0.3, -0.1)
+        self._actions[is_land, 0] = hover_vx[is_land] / self.cfg.max_velocity_xy
+        self._actions[is_land, 1] = hover_vy[is_land] / self.cfg.max_velocity_xy
+        self._actions[is_land, 2] = land_vz[is_land]
+        self._actions[is_land, 3] = 0.0
 
         # ── Decode velocity commands from RL actions ──
         vx_cmd = self._actions[:, 0] * self.cfg.max_velocity_xy
@@ -511,7 +530,7 @@ class ForestNavEnv(DirectRLEnv):
         self._phase[to_navigate] = self.NAVIGATE
 
         altitude = self._robot.data.root_pos_w[:, 2]
-        to_hover = (self._phase == self.NAVIGATE) & (xy_dist < self.cfg.hover_position_tolerance) & (speed < 1.5) & (altitude > 1.0)
+        to_hover = (self._phase == self.NAVIGATE) & (xy_dist < self.cfg.hover_position_tolerance) & (speed < 2.0) & (altitude > 0.8)
         self._phase[to_hover] = self.HOVER
         self._hover_timer[to_hover] = 0.0
 
@@ -610,7 +629,7 @@ class ForestNavEnv(DirectRLEnv):
         self._robot.reset(env_ids)
         super()._reset_idx(env_ids)
 
-        if len(env_ids) == self.num_envs:
+        if len(env_ids) == self.num_envs and self.cfg.randomize_episode_start:
             self.episode_length_buf = torch.randint_like(self.episode_length_buf, high=int(self.max_episode_length))
 
         self._actions[env_ids] = 0.0
@@ -691,7 +710,7 @@ class ForestNavPPORunnerCfg(RslRlOnPolicyRunnerCfg):
         num_mini_batches=4,
         learning_rate=1.0e-4,
         schedule="adaptive",
-        gamma=0.99,
+        gamma=0.98,
         lam=0.95,
         desired_kl=0.008,
         max_grad_norm=1.0,
@@ -762,6 +781,7 @@ def play():
     env_cfg = ForestNavEnvCfg()
     env_cfg.scene.num_envs = args_cli.num_envs
     env_cfg.episode_length_s = 30.0
+    env_cfg.randomize_episode_start = False
 
     env = gym.make("Isaac-CrazyflieWaypoint-PPO-v0", cfg=env_cfg)
     env = RslRlVecEnvWrapper(env)
@@ -814,7 +834,8 @@ def play():
 def evaluate():
     env_cfg = ForestNavEnvCfg()
     env_cfg.scene.num_envs = args_cli.num_envs
-    env_cfg.episode_length_s = 15.0
+    env_cfg.episode_length_s = 30.0
+    env_cfg.randomize_episode_start = False
     env_cfg.debug_vis = False
 
     env = gym.make("Isaac-CrazyflieWaypoint-PPO-v0", cfg=env_cfg)
