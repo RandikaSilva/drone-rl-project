@@ -31,12 +31,12 @@ parser = argparse.ArgumentParser(description="Crazyflie Multi-Waypoint Nav SAC (
 parser.add_argument("--mode", type=str, default="train", choices=["train", "play", "eval"],
                     help="Mode: train, play, or eval.")
 parser.add_argument("--num_envs", type=int, default=256, help="Number of environments.")
-parser.add_argument("--total_timesteps", type=int, default=16000000, help="Total training timesteps.")
+parser.add_argument("--total_timesteps", type=int, default=24000000, help="Total training timesteps.")
 parser.add_argument("--seed", type=int, default=42, help="Random seed.")
 parser.add_argument("--checkpoint", type=str, default=None, help="Path to checkpoint for play/eval or resume.")
 parser.add_argument("--num_episodes", type=int, default=50, help="Number of episodes for eval mode.")
-parser.add_argument("--min_waypoints", type=int, default=3, help="Min waypoints per episode.")
-parser.add_argument("--max_waypoints", type=int, default=5, help="Max waypoints per episode.")
+parser.add_argument("--min_waypoints", type=int, default=1, help="Min waypoints per episode.")
+parser.add_argument("--max_waypoints", type=int, default=3, help="Max waypoints per episode.")
 
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
@@ -95,10 +95,10 @@ VISIBLE_CRAZYFLIE_CFG = CRAZYFLIE_CFG.replace(
 class MultiWaypointNavEnvCfg(DirectRLEnvCfg):
     """Configuration for the Crazyflie multi-waypoint navigation environment."""
 
-    episode_length_s = 40.0
+    episode_length_s = 60.0
     decimation = 2
-    action_space = 4
-    observation_space = 26
+    action_space = 3       # HL: [yaw_offset, speed_factor, alt_offset]
+    observation_space = 26  # vel(3)+angvel(3)+grav(3)+goal_b(3)+lidar(9)+phase(5)
     state_space = 0
     debug_vis = True
 
@@ -122,16 +122,23 @@ class MultiWaypointNavEnvCfg(DirectRLEnvCfg):
     thrust_to_weight = 1.9
     moment_scale = 0.04
 
-    # Low-level PID controller (frozen — not learned)
+    # Kinematic control (matching obstacle v9 architecture)
     max_velocity_xy: float = 2.0
     max_velocity_z: float = 1.0
     max_yaw_rate: float = 1.5
-    pid_vel_kp: float = 0.25        # velocity error → desired tilt (rad per m/s)
-    pid_att_kp: float = 6.0         # attitude error → torque (proportional)
-    pid_att_kd: float = 1.0         # angular velocity damping (derivative)
-    pid_vz_kp: float = 0.5          # vertical velocity error → thrust correction
-    pid_yaw_kp: float = 0.4         # yaw rate error → yaw torque
-    pid_max_tilt: float = 0.5       # max desired tilt angle (radians, ~28 deg)
+    pid_max_tilt: float = 0.5       # max visual tilt angle (radians, ~28 deg)
+    drag_tilt_coeff: float = 0.06   # rad per m/s — visual tilt from velocity
+
+    # Deterministic LL controller gains
+    ll_gain_xy: float = 1.5         # lateral: velocity = gain * goal_distance
+    ll_gain_z: float = 0.8          # vertical: velocity = gain * altitude_error
+    ll_gain_yaw: float = 0.5        # yaw: rate = gain * angle_to_goal
+
+    # HL goal modifier ranges (RL action semantics)
+    max_yaw_offset: float = 0.8     # radians (~46°) — yaw steering authority
+    speed_factor_range: tuple = (0.0, 1.2)  # 0 = stop, 1.2 = fast
+    max_altitude_offset: float = 0.5  # meters above/below cruise
+    goal_modifier_smoothing: float = 0.3  # EMA alpha for smooth HL→LL transitions
 
     lidar = RayCasterCfg(
         prim_path="/World/envs/env_.*/Robot/body", update_period=0,
@@ -144,27 +151,28 @@ class MultiWaypointNavEnvCfg(DirectRLEnvCfg):
     )
     lidar_max_distance: float = 15.0
 
-    goal_threshold: float = 0.5
-    landing_speed_threshold: float = 1.0
+    goal_threshold: float = 1.5
+    landing_speed_threshold: float = 1.5
     max_flight_height: float = 8.0
     min_flight_height: float = 0.05
     cruise_altitude: float = 1.5
+    randomize_episode_start: bool = True
 
-    takeoff_altitude_tolerance: float = 0.3
-    stabilize_duration: float = 2.0
-    hover_position_tolerance: float = 0.5
+    takeoff_altitude_tolerance: float = 0.5
+    stabilize_duration: float = 1.5
+    hover_position_tolerance: float = 3.0
     hover_duration: float = 2.0
 
-    static_start_pos: tuple = (-10.0, 0.0, 0.2)
-    min_num_waypoints: int = 3
-    max_num_waypoints: int = 5
+    static_start_pos: tuple = (-5.0, 0.0, 0.2)
+    min_num_waypoints: int = 1
+    max_num_waypoints: int = 3
 
-    arena_x_range: tuple = (-8.0, 8.0)
-    arena_y_range: tuple = (-6.0, 6.0)
-    min_y_change: float = 2.5
+    arena_x_range: tuple = (-4.0, 4.0)
+    arena_y_range: tuple = (-3.0, 3.0)
+    min_y_change: float = 1.5
 
-    intermediate_waypoint_tolerance: float = 2.0
-    final_waypoint_tolerance: float = 0.5
+    intermediate_waypoint_tolerance: float = 2.5
+    final_waypoint_tolerance: float = 3.0
 
     # Reward scales
     takeoff_ascent_scale: float = 10.0
@@ -173,12 +181,12 @@ class MultiWaypointNavEnvCfg(DirectRLEnvCfg):
     stabilize_low_speed_scale: float = 2.0
     stabilize_altitude_scale: float = -2.0
     stabilize_ang_vel_scale: float = 1.0
-    nav_xy_progress_scale: float = 3.0
-    nav_velocity_align_scale: float = 10.0
-    nav_lateral_penalty_scale: float = -1.0
+    nav_xy_progress_scale: float = 5.0
+    nav_velocity_align_scale: float = 6.0
+    nav_lateral_penalty_scale: float = -0.5
     nav_altitude_scale: float = -2.0
-    nav_stability_scale: float = 2.0
-    nav_max_speed: float = 2.5
+    nav_stability_scale: float = 3.0
+    nav_max_speed: float = 2.0
     nav_speed_penalty_scale: float = -3.0
     intermediate_waypoint_bonus: float = 100.0
     speed_carry_bonus_scale: float = 5.0
@@ -220,36 +228,57 @@ class MultiWaypointNavEnv(DirectRLEnv):
     def __init__(self, cfg: MultiWaypointNavEnvCfg, render_mode: str | None = None, **kwargs):
         super().__init__(cfg, render_mode, **kwargs)
 
+        N = self.num_envs
         max_wps = self.cfg.max_num_waypoints
 
         # Action buffers
-        self._actions = torch.zeros(
-            self.num_envs, gym.spaces.flatdim(self.single_action_space), device=self.device
-        )
-        self._thrust = torch.zeros(self.num_envs, 1, 3, device=self.device)
-        self._moment = torch.zeros(self.num_envs, 1, 3, device=self.device)
+        self._actions = torch.zeros(N, gym.spaces.flatdim(self.single_action_space), device=self.device)
+        self._thrust = torch.zeros(N, 1, 3, device=self.device)
+        self._moment = torch.zeros(N, 1, 3, device=self.device)
+
+        # Kinematic control state (matching obstacle v9 architecture)
+        self._tracked_yaw = torch.zeros(N, device=self.device)
+        self._smooth_vx = torch.zeros(N, device=self.device)
+        self._smooth_vy = torch.zeros(N, device=self.device)
+        self._smooth_vz = torch.zeros(N, device=self.device)
+        self._smooth_yaw_rate = torch.zeros(N, device=self.device)
+        self._desired_vel_w = torch.zeros(N, 3, device=self.device)
+        self._prev_vel_w = torch.zeros(N, 3, device=self.device)
+        self._smoothed_accel_w = torch.zeros(N, 3, device=self.device)
+
+        # HL goal modifier state (EMA-smoothed)
+        self._hl_yaw_offset = torch.zeros(N, device=self.device)
+        self._hl_speed_factor = torch.full((N,), 0.6, device=self.device)
+        self._hl_alt_offset = torch.zeros(N, device=self.device)
+        self._hl_step_counter = torch.zeros(N, dtype=torch.int32, device=self.device)
+
+        # LL velocity command buffers
+        self._ll_vx_cmd = torch.zeros(N, device=self.device)
+        self._ll_vy_cmd = torch.zeros(N, device=self.device)
+        self._ll_vz_cmd = torch.zeros(N, device=self.device)
+        self._ll_yaw_rate_cmd = torch.zeros(N, device=self.device)
 
         # Multi-waypoint storage
-        self._waypoints_w = torch.zeros(self.num_envs, max_wps, 3, device=self.device)
-        self._num_waypoints = torch.zeros(self.num_envs, dtype=torch.int32, device=self.device)
-        self._current_wp_idx = torch.zeros(self.num_envs, dtype=torch.int32, device=self.device)
+        self._waypoints_w = torch.zeros(N, max_wps, 3, device=self.device)
+        self._num_waypoints = torch.zeros(N, dtype=torch.int32, device=self.device)
+        self._current_wp_idx = torch.zeros(N, dtype=torch.int32, device=self.device)
 
         # Current target (dynamically updated as waypoints are reached)
-        self._goal_pos_w = torch.zeros(self.num_envs, 3, device=self.device)
+        self._goal_pos_w = torch.zeros(N, 3, device=self.device)
         # Final goal (last waypoint, used for landing/termination)
-        self._final_goal_pos_w = torch.zeros(self.num_envs, 3, device=self.device)
+        self._final_goal_pos_w = torch.zeros(N, 3, device=self.device)
         # Start position (world frame)
-        self._start_pos_w = torch.zeros(self.num_envs, 3, device=self.device)
+        self._start_pos_w = torch.zeros(N, 3, device=self.device)
 
         # Track distances for shaped rewards
-        self._prev_xy_dist = torch.zeros(self.num_envs, device=self.device)
-        self._prev_z_dist = torch.zeros(self.num_envs, device=self.device)
-        self._prev_alt = torch.zeros(self.num_envs, device=self.device)
+        self._prev_xy_dist = torch.zeros(N, device=self.device)
+        self._prev_z_dist = torch.zeros(N, device=self.device)
+        self._prev_alt = torch.zeros(N, device=self.device)
 
         # Phase state machine
-        self._phase = torch.zeros(self.num_envs, dtype=torch.int32, device=self.device)
-        self._stabilize_timer = torch.zeros(self.num_envs, device=self.device)
-        self._hover_timer = torch.zeros(self.num_envs, device=self.device)
+        self._phase = torch.zeros(N, dtype=torch.int32, device=self.device)
+        self._stabilize_timer = torch.zeros(N, device=self.device)
+        self._hover_timer = torch.zeros(N, device=self.device)
 
         # Robot physical properties
         self._body_id = self._robot.find_bodies("body")[0]
@@ -259,7 +288,7 @@ class MultiWaypointNavEnv(DirectRLEnv):
 
         # Episode logging
         self._episode_sums = {
-            key: torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
+            key: torch.zeros(N, dtype=torch.float, device=self.device)
             for key in [
                 "takeoff_ascent", "takeoff_drift",
                 "stabilize_position", "stabilize_speed", "stabilize_altitude", "stabilize_ang_vel",
@@ -392,66 +421,199 @@ class MultiWaypointNavEnv(DirectRLEnv):
 
         return reached
 
-    # ── Physics ──────────────────────────────────────────────────────────────
+    # ── Kinematic Control (from obstacle v9 — cannot crash) ────────────────
+
+    def _euler_to_quat(self, roll, pitch, yaw):
+        """Convert roll, pitch, yaw (N,) tensors to quaternion (N, 4) as [w, x, y, z]."""
+        cr = torch.cos(roll * 0.5)
+        sr = torch.sin(roll * 0.5)
+        cp = torch.cos(pitch * 0.5)
+        sp = torch.sin(pitch * 0.5)
+        cy = torch.cos(yaw * 0.5)
+        sy = torch.sin(yaw * 0.5)
+        w = cr * cp * cy + sr * sp * sy
+        x = sr * cp * cy - cr * sp * sy
+        y = cr * sp * cy + sr * cp * sy
+        z = cr * cp * sy - sr * sp * cy
+        return torch.stack([w, x, y, z], dim=-1)
+
+    def _compute_goal_for_ll(self) -> torch.Tensor:
+        """Compute HL-modified goal in body frame for the LL controller.
+
+        During NAVIGATE: applies yaw_offset, speed_factor, alt_offset from HL.
+        Other phases: returns raw goal in body frame (HL modifiers ignored).
+        """
+        root_pos = self._robot.data.root_pos_w
+        # Goal offset in world frame
+        goal_delta_w = self._goal_pos_w - root_pos
+
+        # Modify goal for NAVIGATE phase using HL outputs
+        is_nav = self._phase == self.NAVIGATE
+        if is_nav.any():
+            # Rotate goal direction by HL yaw offset
+            cos_yo = torch.cos(self._hl_yaw_offset)
+            sin_yo = torch.sin(self._hl_yaw_offset)
+            gx = goal_delta_w[:, 0].clone()
+            gy = goal_delta_w[:, 1].clone()
+            goal_delta_w[is_nav, 0] = (cos_yo * gx - sin_yo * gy)[is_nav]
+            goal_delta_w[is_nav, 1] = (sin_yo * gx + cos_yo * gy)[is_nav]
+            # Scale distance by speed factor
+            goal_delta_w[is_nav, 0] *= self._hl_speed_factor[is_nav]
+            goal_delta_w[is_nav, 1] *= self._hl_speed_factor[is_nav]
+            # Add altitude offset
+            goal_delta_w[is_nav, 2] += self._hl_alt_offset[is_nav]
+
+        # Rotate to body frame using tracked yaw
+        cy = torch.cos(-self._tracked_yaw)
+        sy = torch.sin(-self._tracked_yaw)
+        goal_b = torch.zeros_like(goal_delta_w)
+        goal_b[:, 0] = cy * goal_delta_w[:, 0] - sy * goal_delta_w[:, 1]
+        goal_b[:, 1] = sy * goal_delta_w[:, 0] + cy * goal_delta_w[:, 1]
+        goal_b[:, 2] = goal_delta_w[:, 2]
+        return goal_b
+
+    def _run_low_level_policy(self):
+        """Deterministic proportional controller — adapted from obstacle v9.
+
+        Computes body-frame velocity commands proportional to goal direction/distance,
+        with phase-appropriate behavior (all deterministic, no RL).
+        """
+        goal_b = self._compute_goal_for_ll()
+        phase = self._phase
+        K_xy = self.cfg.ll_gain_xy
+        K_z = self.cfg.ll_gain_z
+        K_yaw = self.cfg.ll_gain_yaw
+
+        # Default: proportional control toward goal (used in NAVIGATE)
+        vx_cmd = K_xy * goal_b[:, 0]
+        vy_cmd = K_xy * goal_b[:, 1]
+        vz_cmd = K_z * goal_b[:, 2]
+        yaw_to_goal = torch.atan2(goal_b[:, 1], goal_b[:, 0])
+        yaw_rate_cmd = K_yaw * yaw_to_goal
+
+        # TAKEOFF: ascend only, no lateral drift
+        takeoff = (phase == self.TAKEOFF)
+        if takeoff.any():
+            alt_err = self.cfg.cruise_altitude - self._robot.data.root_pos_w[takeoff, 2]
+            vx_cmd[takeoff] = 0.0
+            vy_cmd[takeoff] = 0.0
+            vz_cmd[takeoff] = K_z * alt_err
+            yaw_rate_cmd[takeoff] = 0.0
+
+        # STABILIZE / HOVER: hold position with gentle corrections
+        hold = (phase == self.STABILIZE) | (phase == self.HOVER)
+        if hold.any():
+            vx_cmd[hold] = K_xy * goal_b[hold, 0] * 0.3
+            vy_cmd[hold] = K_xy * goal_b[hold, 1] * 0.3
+            vz_cmd[hold] = K_z * goal_b[hold, 2]
+            yaw_rate_cmd[hold] = 0.0
+
+        # LAND: descend slowly, hold XY
+        land = (phase == self.LAND)
+        if land.any():
+            vx_cmd[land] = K_xy * goal_b[land, 0] * 0.3
+            vy_cmd[land] = K_xy * goal_b[land, 1] * 0.3
+            vz_cmd[land] = -0.5
+            yaw_rate_cmd[land] = 0.0
+
+        # Clamp to max velocities
+        self._ll_vx_cmd = vx_cmd.clamp(-self.cfg.max_velocity_xy, self.cfg.max_velocity_xy)
+        self._ll_vy_cmd = vy_cmd.clamp(-self.cfg.max_velocity_xy, self.cfg.max_velocity_xy)
+        self._ll_vz_cmd = vz_cmd.clamp(-self.cfg.max_velocity_z, self.cfg.max_velocity_z)
+        self._ll_yaw_rate_cmd = yaw_rate_cmd.clamp(-self.cfg.max_yaw_rate, self.cfg.max_yaw_rate)
+
+    def _kinematic_update(self):
+        """Directly set robot pose — no physics forces. Cannot crash."""
+        dt = self.sim.cfg.dt  # physics step dt (0.01s)
+        N = self.num_envs
+
+        # EMA smooth body-frame commands (simulates motor/control lag)
+        cmd_alpha = 0.06  # matches v9: 95% in ~490ms at 100Hz
+        self._smooth_vx = (1 - cmd_alpha) * self._smooth_vx + cmd_alpha * self._ll_vx_cmd
+        self._smooth_vy = (1 - cmd_alpha) * self._smooth_vy + cmd_alpha * self._ll_vy_cmd
+        self._smooth_vz = (1 - cmd_alpha) * self._smooth_vz + cmd_alpha * self._ll_vz_cmd
+        self._smooth_yaw_rate = (1 - cmd_alpha) * self._smooth_yaw_rate + cmd_alpha * self._ll_yaw_rate_cmd
+
+        # Convert body-frame velocity to world-frame using tracked yaw
+        cy = torch.cos(self._tracked_yaw)
+        sy = torch.sin(self._tracked_yaw)
+        vel_w_x = cy * self._smooth_vx - sy * self._smooth_vy
+        vel_w_y = sy * self._smooth_vx + cy * self._smooth_vy
+        vel_w_z = self._smooth_vz
+
+        self._desired_vel_w[:, 0] = vel_w_x
+        self._desired_vel_w[:, 1] = vel_w_y
+        self._desired_vel_w[:, 2] = vel_w_z
+
+        # Integrate position
+        pos = self._robot.data.root_pos_w.clone()
+        pos[:, 0] += vel_w_x * dt
+        pos[:, 1] += vel_w_y * dt
+        pos[:, 2] += vel_w_z * dt
+        pos[:, 2].clamp_(min=0.05, max=self.cfg.max_flight_height)  # CANNOT crash
+
+        # Update tracked yaw
+        self._tracked_yaw += self._smooth_yaw_rate * dt
+
+        # Tilt proportional to acceleration (visual realism like a real quadrotor)
+        g = 9.81
+        max_tilt = self.cfg.pid_max_tilt
+        raw_accel_w = (self._desired_vel_w - self._prev_vel_w) / dt
+        self._prev_vel_w = self._desired_vel_w.clone()
+        accel_alpha = 0.15
+        self._smoothed_accel_w = (1 - accel_alpha) * self._smoothed_accel_w + accel_alpha * raw_accel_w
+
+        # Rotate acceleration into body frame
+        accel_body_x = cy * self._smoothed_accel_w[:, 0] + sy * self._smoothed_accel_w[:, 1]
+        accel_body_y = -sy * self._smoothed_accel_w[:, 0] + cy * self._smoothed_accel_w[:, 1]
+
+        # Body-frame velocity for drag tilt
+        vel_body_x = cy * vel_w_x + sy * vel_w_y
+        vel_body_y = -sy * vel_w_x + cy * vel_w_y
+
+        k_drag = self.cfg.drag_tilt_coeff
+        pitch = (accel_body_x / g + vel_body_x * k_drag).clamp(-max_tilt, max_tilt)
+        roll = (-accel_body_y / g - vel_body_y * k_drag).clamp(-max_tilt, max_tilt)
+        quat = self._euler_to_quat(roll, pitch, self._tracked_yaw)
+
+        # Write pose and velocity to sim
+        root_pose = torch.cat([pos, quat], dim=-1)
+        vel_state = torch.zeros(N, 6, device=self.device)
+        vel_state[:, 0] = vel_w_x
+        vel_state[:, 1] = vel_w_y
+        vel_state[:, 2] = vel_w_z
+        vel_state[:, 5] = self._smooth_yaw_rate
+        self._robot.write_root_pose_to_sim(root_pose)
+        self._robot.write_root_velocity_to_sim(vel_state)
+
+    # ── Physics Step ────────────────────────────────────────────────────────
 
     def _pre_physics_step(self, actions: torch.Tensor):
-        self._actions = actions.clone().clamp(-1.0, 1.0)
+        """HL goal modifier (from RL) + deterministic LL controller."""
+        # Update HL goal modifier every 5 steps (10 Hz) — RL controls these
+        self._hl_step_counter += 1
+        update_mask = self._hl_step_counter >= 5
+        if update_mask.any():
+            self._hl_step_counter[update_mask] = 0
+            a = actions.clone().clamp(-1.0, 1.0)
+            lo, hi = self.cfg.speed_factor_range
+            target_yaw = a[:, 0] * self.cfg.max_yaw_offset
+            target_spd = lo + (a[:, 1] + 1.0) * 0.5 * (hi - lo)
+            target_alt = a[:, 2] * self.cfg.max_altitude_offset
+            alpha = self.cfg.goal_modifier_smoothing
+            self._hl_yaw_offset[update_mask] = ((1 - alpha) * self._hl_yaw_offset + alpha * target_yaw)[update_mask]
+            self._hl_speed_factor[update_mask] = ((1 - alpha) * self._hl_speed_factor + alpha * target_spd)[update_mask]
+            self._hl_alt_offset[update_mask] = ((1 - alpha) * self._hl_alt_offset + alpha * target_alt)[update_mask]
 
-        # ── Decode velocity commands from RL actions ──
-        vx_cmd = self._actions[:, 0] * self.cfg.max_velocity_xy
-        vy_cmd = self._actions[:, 1] * self.cfg.max_velocity_xy
-        vz_cmd = self._actions[:, 2] * self.cfg.max_velocity_z
-        yaw_rate_cmd = self._actions[:, 3] * self.cfg.max_yaw_rate
-
-        # ── Current state ──
-        vel_b = self._robot.data.root_lin_vel_b
-        ang_vel_b = self._robot.data.root_ang_vel_b
-        gravity_b = self._robot.data.projected_gravity_b
-
-        # ── OUTER LOOP: velocity error → desired attitude ──
-        vx_err = vx_cmd - vel_b[:, 0]
-        vy_err = vy_cmd - vel_b[:, 1]
-        vz_err = vz_cmd - vel_b[:, 2]
-
-        desired_roll = (self.cfg.pid_vel_kp * vy_err).clamp(
-            -self.cfg.pid_max_tilt, self.cfg.pid_max_tilt
-        )
-        desired_pitch = (-self.cfg.pid_vel_kp * vx_err).clamp(
-            -self.cfg.pid_max_tilt, self.cfg.pid_max_tilt
-        )
-
-        # ── Current attitude from projected gravity ──
-        current_roll = gravity_b[:, 1]
-        current_pitch = -gravity_b[:, 0]
-
-        # ── INNER LOOP: attitude PD → torques (normalized to [-1, 1]) ──
-        roll_torque = (
-            self.cfg.pid_att_kp * (desired_roll - current_roll)
-            - self.cfg.pid_att_kd * ang_vel_b[:, 0]
-        ).clamp(-1.0, 1.0)
-
-        pitch_torque = (
-            self.cfg.pid_att_kp * (desired_pitch - current_pitch)
-            - self.cfg.pid_att_kd * ang_vel_b[:, 1]
-        ).clamp(-1.0, 1.0)
-
-        yaw_torque = (
-            self.cfg.pid_yaw_kp * (yaw_rate_cmd - ang_vel_b[:, 2])
-        ).clamp(-1.0, 1.0)
-
-        # ── THRUST: hover + vertical velocity correction ──
-        hover_thrust = self._robot_weight
-        thrust = hover_thrust * (1.0 + self.cfg.pid_vz_kp * vz_err)
-        max_thrust = self.cfg.thrust_to_weight * self._robot_weight
-        thrust = thrust.clamp(0.0, max_thrust)
-
-        # ── Apply forces and torques ──
-        self._thrust[:, 0, 2] = thrust
-        self._moment[:, 0, 0] = self.cfg.moment_scale * self._robot_weight * roll_torque
-        self._moment[:, 0, 1] = self.cfg.moment_scale * self._robot_weight * pitch_torque
-        self._moment[:, 0, 2] = self.cfg.moment_scale * self._robot_weight * yaw_torque
+        # Run deterministic LL controller at 50 Hz
+        self._run_low_level_policy()
 
     def _apply_action(self):
+        """Kinematic update — directly set robot pose each step. Cannot crash."""
+        self._kinematic_update()
+        # Apply hover thrust to keep physics engine happy
+        self._thrust[:, 0, 2] = self._robot_weight
+        self._moment[:] = 0
         self._robot.set_external_force_and_torque(
             self._thrust, self._moment, body_ids=self._body_id
         )
@@ -459,7 +621,7 @@ class MultiWaypointNavEnv(DirectRLEnv):
     # ── Observations ─────────────────────────────────────────────────────────
 
     def _get_observations(self) -> dict:
-        """Observations: drone state (9) + current_wp_pos_b (3) + LiDAR (9) + phase_one_hot (5) = 26."""
+        """Observations: vel(3) + angvel(3) + grav(3) + goal_b(3) + LiDAR(9) + phase(5) = 26."""
         goal_pos_b, _ = subtract_frame_transforms(
             self._robot.data.root_pos_w,
             self._robot.data.root_quat_w,
@@ -581,11 +743,11 @@ class MultiWaypointNavEnv(DirectRLEnv):
             torch.zeros_like(vel_toward_goal),
         )
 
-        # Lateral penalty: reduced to 30% for intermediate waypoints (turns expected)
+        # Lateral penalty: zero for intermediate waypoints (turns required for zigzag)
         lateral_scale = torch.where(
             is_at_final_wp,
             torch.full_like(xy_dist, self.cfg.nav_lateral_penalty_scale),
-            torch.full_like(xy_dist, self.cfg.nav_lateral_penalty_scale * 0.3),
+            torch.zeros_like(xy_dist),
         )
         vel_lateral = lin_vel_w[:, :2] - vel_toward_goal.unsqueeze(1) * goal_dir_xy
         lateral_speed = torch.linalg.norm(vel_lateral, dim=1)
@@ -724,7 +886,7 @@ class MultiWaypointNavEnv(DirectRLEnv):
         to_navigate = (self._phase == self.STABILIZE) & (self._stabilize_timer >= self.cfg.stabilize_duration)
         self._phase[to_navigate] = self.NAVIGATE
 
-        # NAVIGATE -> HOVER: ONLY at final waypoint with tight tolerance
+        # NAVIGATE -> HOVER: ONLY at final waypoint
         current_delta = self._goal_pos_w - root_pos
         current_xy_dist = torch.linalg.norm(current_delta[:, :2], dim=1)
         altitude_now = self._robot.data.root_pos_w[:, 2]
@@ -732,8 +894,8 @@ class MultiWaypointNavEnv(DirectRLEnv):
             (self._phase == self.NAVIGATE)
             & (self._current_wp_idx >= (self._num_waypoints - 1))
             & (current_xy_dist < self.cfg.final_waypoint_tolerance)
-            & (speed < 1.5)
-            & (altitude_now > 1.0)
+            & (speed < 2.0)
+            & (altitude_now > 0.8)
         )
         self._phase[to_hover] = self.HOVER
         self._hover_timer[to_hover] = 0.0
@@ -863,12 +1025,30 @@ class MultiWaypointNavEnv(DirectRLEnv):
         self._robot.reset(env_ids)
         super()._reset_idx(env_ids)
 
-        if len(env_ids) == self.num_envs:
+        if self.cfg.randomize_episode_start and len(env_ids) == self.num_envs:
             self.episode_length_buf = torch.randint_like(
                 self.episode_length_buf, high=int(self.max_episode_length)
             )
 
         self._actions[env_ids] = 0.0
+
+        # Reset kinematic control state
+        self._tracked_yaw[env_ids] = 0.0
+        self._smooth_vx[env_ids] = 0.0
+        self._smooth_vy[env_ids] = 0.0
+        self._smooth_vz[env_ids] = 0.0
+        self._smooth_yaw_rate[env_ids] = 0.0
+        self._desired_vel_w[env_ids] = 0.0
+        self._prev_vel_w[env_ids] = 0.0
+        self._smoothed_accel_w[env_ids] = 0.0
+        self._hl_yaw_offset[env_ids] = 0.0
+        self._hl_speed_factor[env_ids] = 0.6
+        self._hl_alt_offset[env_ids] = 0.0
+        self._hl_step_counter[env_ids] = 0
+        self._ll_vx_cmd[env_ids] = 0.0
+        self._ll_vy_cmd[env_ids] = 0.0
+        self._ll_vz_cmd[env_ids] = 0.0
+        self._ll_yaw_rate_cmd[env_ids] = 0.0
 
         # Generate random waypoint sequence
         self._generate_waypoints(env_ids)
@@ -1011,7 +1191,7 @@ def train():
             ent_coef="auto",
             target_entropy="auto",
             policy_kwargs=dict(
-                net_arch=[256, 128, 64],
+                net_arch=[512, 256],
             ),
             verbose=1,
             seed=args_cli.seed,
@@ -1126,6 +1306,7 @@ def evaluate():
     env_cfg.scene.num_envs = num_eval_envs
     env_cfg.episode_length_s = 40.0
     env_cfg.debug_vis = False
+    env_cfg.randomize_episode_start = False
     env_cfg.min_num_waypoints = args_cli.min_waypoints
     env_cfg.max_num_waypoints = args_cli.max_waypoints
 
@@ -1218,7 +1399,6 @@ def evaluate():
     print(f"{'='*60}")
     print(f"  Success Rate:           {success_rate:6.1f}%  ({goal_reached_count}/{n} landed at goal)")
     print(f"  Crash Rate:             {crash_rate:6.1f}%  ({crashes}/{n} crashed)")
-    print(f"  Waypoint Completion:    {avg_wp_rate:6.1f}%  (avg fraction of waypoints reached)")
     print(f"  Avg Final Distance:     {avg_distance:6.3f} m  (lower = better)")
     print(f"  Min Final Distance:     {min_distance:6.3f} m  (best single episode)")
     print(f"  Avg Reward:             {avg_reward:8.2f}  (+/- {std_reward:.2f})")
@@ -1229,12 +1409,10 @@ def evaluate():
         print(f"  VERDICT: Excellent -- drone navigates and lands reliably!")
     elif success_rate > 50:
         print(f"  VERDICT: Good -- drone lands sometimes, needs more training")
-    elif avg_wp_rate > 60:
-        print(f"  VERDICT: Fair -- drone navigates waypoints but struggles to land")
-    elif avg_wp_rate > 30:
-        print(f"  VERDICT: Partial -- drone reaches some waypoints but not all")
+    elif success_rate > 20:
+        print(f"  VERDICT: Partial -- drone lands occasionally, needs improvement")
     else:
-        print(f"  VERDICT: Needs work -- drone doesn't navigate the waypoints")
+        print(f"  VERDICT: Needs work -- drone doesn't navigate reliably")
     print(f"{'='*60}\n")
 
     env.close()

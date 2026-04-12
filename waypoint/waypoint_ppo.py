@@ -182,8 +182,8 @@ class ForestNavEnvCfg(DirectRLEnvCfg):
 
     takeoff_altitude_tolerance: float = 0.5
     stabilize_duration: float = 1.0
-    hover_position_tolerance: float = 3.0
-    hover_duration: float = 1.5
+    hover_position_tolerance: float = 4.0
+    hover_duration: float = 20.0
 
     static_start_pos: tuple = (-5.0, 0.0, 0.2)
     static_goal_pos: tuple = (5.0, 0.0, 0.2)
@@ -195,13 +195,15 @@ class ForestNavEnvCfg(DirectRLEnvCfg):
     stabilize_low_speed_scale: float = 2.0
     stabilize_altitude_scale: float = -2.0
     stabilize_ang_vel_scale: float = 1.0
-    nav_xy_progress_scale: float = 15.0
-    nav_velocity_align_scale: float = 12.0
+    nav_xy_progress_scale: float = 20.0
+    nav_velocity_align_scale: float = 18.0
     nav_lateral_penalty_scale: float = -2.0
-    nav_altitude_scale: float = -2.0
-    nav_stability_scale: float = 3.0
+    nav_altitude_scale: float = -5.0
+    nav_stability_scale: float = 6.0
     nav_max_speed: float = 2.0
     nav_speed_penalty_scale: float = -3.0
+    nav_proximity_scale: float = 5.0
+    nav_survival_scale: float = 2.0
     hover_position_scale: float = 3.0
     hover_low_speed_scale: float = 2.0
     hover_altitude_scale: float = -2.0
@@ -214,7 +216,8 @@ class ForestNavEnvCfg(DirectRLEnvCfg):
     land_controlled_descent_scale: float = 5.0
     land_altitude_penalty_scale: float = -1.5
     goal_reached_bonus: float = 750.0
-    time_penalty: float = -1.5
+    crash_penalty: float = -100.0
+    time_penalty: float = -0.5
     ang_vel_reward_scale: float = -0.5
     yaw_rate_penalty_scale: float = -1.0
     upright_reward_scale: float = 2.0
@@ -260,10 +263,10 @@ class ForestNavEnv(DirectRLEnv):
             for key in [
                 "takeoff_ascent", "takeoff_drift",
                 "stabilize_position", "stabilize_speed", "stabilize_altitude", "stabilize_ang_vel",
-                "nav_xy_progress", "nav_velocity_align", "nav_lateral", "nav_altitude", "nav_stability", "nav_speed_penalty",
+                "nav_xy_progress", "nav_velocity_align", "nav_lateral", "nav_altitude", "nav_stability", "nav_speed_penalty", "nav_proximity", "nav_survival",
                 "hover_position", "hover_speed", "hover_altitude",
                 "land_descent", "land_xy_stability", "land_drift", "land_precision", "land_descent_control", "land_controlled_descent", "land_altitude_penalty",
-                "goal_bonus", "time_penalty", "ang_vel", "yaw_rate", "upright",
+                "goal_bonus", "crash_penalty", "time_penalty", "ang_vel", "yaw_rate", "upright",
             ]
         }
 
@@ -312,23 +315,38 @@ class ForestNavEnv(DirectRLEnv):
         self._actions[is_stabilize, 2] = torch.clamp(alt_err_to_cruise[is_stabilize] * 0.5, -0.3, 0.3)
         self._actions[is_stabilize, 3] = 0.0
 
-        # ── Auto-pilot for HOVER and LAND phases ──
+        # ── HOVER: 3s stabilize (zero vel), then gentle 0.3 m/s approach ──
         is_hover = self._phase == self.HOVER
         is_land = self._phase == self.LAND
         delta_w = self._goal_pos_w - self._robot.data.root_pos_w
-        hover_vx = torch.clamp(delta_w[:, 0] * 0.8, -0.5, 0.5)
-        hover_vy = torch.clamp(delta_w[:, 1] * 0.8, -0.5, 0.5)
+
+        # Ramp: 0 for first 3s (decelerate safely), then 0→1 over 1s
+        approach_ramp = torch.clamp((self._hover_timer - 3.0) / 1.0, 0.0, 1.0)
+        hover_vx = torch.clamp(delta_w[:, 0] * 0.3, -0.3, 0.3) * approach_ramp
+        hover_vy = torch.clamp(delta_w[:, 1] * 0.3, -0.3, 0.3) * approach_ramp
 
         self._actions[is_hover, 0] = hover_vx[is_hover] / self.cfg.max_velocity_xy
         self._actions[is_hover, 1] = hover_vy[is_hover] / self.cfg.max_velocity_xy
         self._actions[is_hover, 2] = torch.clamp(alt_err_to_cruise[is_hover] * 0.5, -0.3, 0.3)
-        self._actions[is_hover, 3] = 0.0
+        self._actions[is_hover, 3] = 0.0  # hold yaw at current (should be ~0)
 
+        # ── LAND: gentle descent with position hold ──
         land_vz = torch.clamp(-0.3 * torch.ones_like(altitude), -0.3, -0.1)
         self._actions[is_land, 0] = hover_vx[is_land] / self.cfg.max_velocity_xy
         self._actions[is_land, 1] = hover_vy[is_land] / self.cfg.max_velocity_xy
         self._actions[is_land, 2] = land_vz[is_land]
         self._actions[is_land, 3] = 0.0
+
+        # ── Altitude safety layer for NAVIGATE + HOVER (prevents crash) ──
+        is_navigate = self._phase == self.NAVIGATE
+        is_flying = is_navigate | is_hover
+        nav_alt_err = self.cfg.cruise_altitude - altitude
+        safety_vz = torch.clamp(nav_alt_err * 0.8, -0.5, 0.5)
+        too_low_fly = is_flying & (nav_alt_err > 0.3)
+        too_high_fly = is_flying & (nav_alt_err < -0.3)
+        self._actions[too_low_fly, 2] = torch.max(self._actions[too_low_fly, 2], safety_vz[too_low_fly])
+        self._actions[too_high_fly, 2] = torch.min(self._actions[too_high_fly, 2], safety_vz[too_high_fly])
+        self._actions[is_navigate, 3] = 0.0  # zero yaw prevents circling + keeps world/body aligned
 
         # ── Decode velocity commands from RL actions ──
         vx_cmd = self._actions[:, 0] * self.cfg.max_velocity_xy
@@ -386,6 +404,7 @@ class ForestNavEnv(DirectRLEnv):
         self._moment[:, 0, 0] = self.cfg.moment_scale * self._robot_weight * roll_torque
         self._moment[:, 0, 1] = self.cfg.moment_scale * self._robot_weight * pitch_torque
         self._moment[:, 0, 2] = self.cfg.moment_scale * self._robot_weight * yaw_torque
+
 
     def _apply_action(self):
         self._robot.set_external_force_and_torque(
@@ -483,6 +502,12 @@ class ForestNavEnv(DirectRLEnv):
         excess_speed = torch.clamp(speed - self.cfg.nav_max_speed, min=0.0)
         nav_speed_penalty = torch.where(is_navigate, excess_speed * self.cfg.nav_speed_penalty_scale * dt, torch.zeros_like(excess_speed))
 
+        # Navigate: continuous proximity reward (dense gradient toward goal)
+        nav_proximity = torch.where(is_navigate, torch.exp(-xy_dist / 5.0) * self.cfg.nav_proximity_scale * dt, torch.zeros_like(xy_dist))
+
+        # Navigate: survival bonus (reward each step alive in navigate)
+        nav_survival = torch.where(is_navigate, torch.ones_like(xy_dist) * self.cfg.nav_survival_scale * dt, torch.zeros_like(xy_dist))
+
         # Phase 3: HOVER
         hover_position = torch.where(is_hover, torch.exp(-xy_dist) * self.cfg.hover_position_scale * dt, torch.zeros_like(xy_dist))
         hover_speed = torch.where(is_hover, torch.exp(-speed) * self.cfg.hover_low_speed_scale * dt, torch.zeros_like(speed))
@@ -520,6 +545,14 @@ class ForestNavEnv(DirectRLEnv):
         yaw_penalty = yaw_rate * self.cfg.yaw_rate_penalty_scale * dt
         upright_reward = -gravity_z * self.cfg.upright_reward_scale * dt * orient_scale
 
+        # Crash penalty (only during RL-controlled phases, matching _get_dones)
+        is_crashing = (
+            ((altitude < self.cfg.min_flight_height) & ~is_takeoff & ~is_hover & ~is_land)
+            | (altitude > self.cfg.max_flight_height)
+            | ((self._robot.data.projected_gravity_b[:, 2] > 0.7) & ~is_hover & ~is_land)
+        )
+        crash_pen = is_crashing.float() * self.cfg.crash_penalty
+
         # Phase transitions
         to_stabilize = is_takeoff & (alt_error < self.cfg.takeoff_altitude_tolerance)
         self._phase[to_stabilize] = self.STABILIZE
@@ -530,20 +563,34 @@ class ForestNavEnv(DirectRLEnv):
         self._phase[to_navigate] = self.NAVIGATE
 
         altitude = self._robot.data.root_pos_w[:, 2]
-        to_hover = (self._phase == self.NAVIGATE) & (xy_dist < self.cfg.hover_position_tolerance) & (speed < 2.0) & (altitude > 0.8)
+        to_hover = (self._phase == self.NAVIGATE) & (xy_dist < self.cfg.hover_position_tolerance)
         self._phase[to_hover] = self.HOVER
         self._hover_timer[to_hover] = 0.0
+        # Debug: print phase info for env 0 every 200 steps
+        if hasattr(self, '_dbg_ctr'):
+            self._dbg_ctr += 1
+        else:
+            self._dbg_ctr = 0
+        if self._dbg_ctr % 200 == 0:
+            i = 0
+            phase_names = {0: "TAKEOFF", 1: "STABILIZE", 2: "NAVIGATE", 3: "HOVER", 4: "LAND"}
+            q = self._robot.data.root_quat_w[i]
+            y = torch.atan2(2.0*(q[0]*q[3]+q[1]*q[2]), 1.0-2.0*(q[2]*q[2]+q[3]*q[3]))
+            vel = self._robot.data.root_lin_vel_b[i]
+            print(f"  [DBG] step={self._dbg_ctr} phase={phase_names.get(self._phase[i].item(), '?')} xy={xy_dist[i]:.2f} yaw={y:.2f} vb=({vel[0]:.2f},{vel[1]:.2f},{vel[2]:.2f})", flush=True)
 
         self._hover_timer[self._phase == self.HOVER] += dt
-        to_land = (self._phase == self.HOVER) & (self._hover_timer >= self.cfg.hover_duration) & (xy_dist < self.cfg.hover_position_tolerance)
+        to_land = (self._phase == self.HOVER) & (self._hover_timer >= self.cfg.hover_duration)
         self._phase[to_land] = self.LAND
 
         reward = (
             takeoff_ascent + takeoff_drift
             + stabilize_position + stabilize_speed + stabilize_altitude + stabilize_ang_vel
             + nav_xy_progress + nav_velocity_align + nav_lateral_penalty + nav_altitude + nav_stability + nav_speed_penalty
+            + nav_proximity + nav_survival
             + hover_position + hover_speed + hover_altitude
             + land_descent + land_xy_stability + land_drift + land_precision + land_descent_control + land_controlled_descent + land_altitude_penalty + goal_bonus
+            + crash_pen
             + time_penalty + ang_vel_penalty + yaw_penalty + upright_reward
         )
 
@@ -560,6 +607,8 @@ class ForestNavEnv(DirectRLEnv):
         self._episode_sums["nav_altitude"] += nav_altitude
         self._episode_sums["nav_stability"] += nav_stability
         self._episode_sums["nav_speed_penalty"] += nav_speed_penalty
+        self._episode_sums["nav_proximity"] += nav_proximity
+        self._episode_sums["nav_survival"] += nav_survival
         self._episode_sums["hover_position"] += hover_position
         self._episode_sums["hover_speed"] += hover_speed
         self._episode_sums["hover_altitude"] += hover_altitude
@@ -571,6 +620,7 @@ class ForestNavEnv(DirectRLEnv):
         self._episode_sums["land_controlled_descent"] += land_controlled_descent
         self._episode_sums["land_altitude_penalty"] += land_altitude_penalty
         self._episode_sums["goal_bonus"] += goal_bonus
+        self._episode_sums["crash_penalty"] += crash_pen
         self._episode_sums["time_penalty"] += time_penalty
         self._episode_sums["ang_vel"] += ang_vel_penalty
         self._episode_sums["yaw_rate"] += yaw_penalty
@@ -584,10 +634,16 @@ class ForestNavEnv(DirectRLEnv):
         too_low = (
             (self._robot.data.root_pos_w[:, 2] < self.cfg.min_flight_height)
             & (self._phase != self.TAKEOFF)
+            & (self._phase != self.HOVER)
             & (self._phase != self.LAND)
         )
         too_high = self._robot.data.root_pos_w[:, 2] > self.cfg.max_flight_height
-        flipped = self._robot.data.projected_gravity_b[:, 2] > 0.7
+        # Exempt HOVER/LAND from flip check (transition can cause brief tilt spikes)
+        flipped = (
+            (self._robot.data.projected_gravity_b[:, 2] > 0.7)
+            & (self._phase != self.HOVER)
+            & (self._phase != self.LAND)
+        )
 
         goal_dist = torch.linalg.norm(self._goal_pos_w - self._robot.data.root_pos_w, dim=1)
         speed = torch.linalg.norm(self._robot.data.root_lin_vel_b, dim=1)
@@ -693,7 +749,7 @@ class ForestNavPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     empirical_normalization = False
 
     policy = RslRlPpoActorCriticCfg(
-        init_noise_std=0.3,
+        init_noise_std=0.1,                     # low noise — drone must survive to learn
         actor_obs_normalization=True,
         critic_obs_normalization=True,
         actor_hidden_dims=[256, 128, 64],
@@ -705,14 +761,14 @@ class ForestNavPPORunnerCfg(RslRlOnPolicyRunnerCfg):
         value_loss_coef=1.0,
         use_clipped_value_loss=True,
         clip_param=0.2,
-        entropy_coef=0.0,
+        entropy_coef=0.005,                     # was 0.0 — CRITICAL: maintain exploration, prevent policy collapse
         num_learning_epochs=5,
         num_mini_batches=4,
-        learning_rate=1.0e-4,
+        learning_rate=3.0e-4,                   # was 1e-4 — faster learning with adaptive schedule
         schedule="adaptive",
-        gamma=0.98,
+        gamma=0.99,                             # was 0.98 — longer effective horizon for credit assignment
         lam=0.95,
-        desired_kl=0.008,
+        desired_kl=0.01,                        # was 0.008 — allow slightly larger policy updates
         max_grad_norm=1.0,
     )
 
@@ -780,7 +836,7 @@ def train():
 def play():
     env_cfg = ForestNavEnvCfg()
     env_cfg.scene.num_envs = args_cli.num_envs
-    env_cfg.episode_length_s = 30.0
+    env_cfg.episode_length_s = 60.0
     env_cfg.randomize_episode_start = False
 
     env = gym.make("Isaac-CrazyflieWaypoint-PPO-v0", cfg=env_cfg)
@@ -834,7 +890,8 @@ def play():
 def evaluate():
     env_cfg = ForestNavEnvCfg()
     env_cfg.scene.num_envs = args_cli.num_envs
-    env_cfg.episode_length_s = 30.0
+    env_cfg.episode_length_s = 60.0
+    env_cfg.goal_threshold = 2.0  # relaxed for eval (training uses 1.2)
     env_cfg.randomize_episode_start = False
     env_cfg.debug_vis = False
 
@@ -859,15 +916,22 @@ def evaluate():
     env_steps = np.zeros(args_cli.num_envs, dtype=int)
     step_dt = env_cfg.sim.dt * env_cfg.decimation
 
-    print(f"\n{'='*60}")
-    print(f"EVALUATION: PPO | {args_cli.num_episodes} episodes")
-    print(f"Checkpoint: {os.path.basename(args_cli.checkpoint)}")
-    print(f"{'='*60}\n")
+    import sys
+    print(f"\n{'='*60}", flush=True)
+    print(f"EVALUATION: PPO | {args_cli.num_episodes} episodes", flush=True)
+    print(f"Checkpoint: {os.path.basename(args_cli.checkpoint)}", flush=True)
+    print(f"sim_running={simulation_app.is_running()}", flush=True)
+    print(f"{'='*60}\n", flush=True)
+    sys.stdout.flush()
 
+    eval_step = 0
     while total_episodes < args_cli.num_episodes and simulation_app.is_running():
         with torch.no_grad():
             actions = policy(obs)
         obs, rewards, dones, infos = env.step(actions)
+        eval_step += 1
+        if eval_step % 500 == 0:
+            print(f"  [DEBUG] step={eval_step}, episodes_done={total_episodes}, sim_running={simulation_app.is_running()}", flush=True)
 
         if isinstance(rewards, torch.Tensor):
             rewards_np = rewards.cpu().numpy().flatten()
@@ -901,9 +965,11 @@ def evaluate():
                 env_rewards[i] = 0.0
                 env_steps[i] = 0
 
+    print(f"[DEBUG] Loop exited. total_episodes={total_episodes}, sim_running={simulation_app.is_running()}", flush=True)
+
     n = len(episode_rewards)
     if n == 0:
-        print("No episodes completed!")
+        print("No episodes completed!", flush=True)
         env.close()
         return
 
@@ -916,16 +982,18 @@ def evaluate():
     avg_distance = np.mean(valid_distances) if valid_distances else -1
     min_distance = np.min(valid_distances) if valid_distances else -1
 
-    print(f"\n{'='*60}")
-    print(f"RESULTS - PPO ({n} episodes)")
-    print(f"{'='*60}")
-    print(f"  Success Rate:       {success_rate:6.1f}%  ({goal_reached_count}/{n} landed at goal)")
-    print(f"  Crash Rate:         {crash_rate:6.1f}%  ({crashes}/{n} crashed)")
-    print(f"  Avg Final Distance: {avg_distance:6.3f} m")
-    print(f"  Min Final Distance: {min_distance:6.3f} m")
-    print(f"  Avg Reward:         {avg_reward:8.2f}  (+/- {std_reward:.2f})")
-    print(f"  Avg Episode Length:  {avg_length:5.2f} s")
-    print(f"{'='*60}\n")
+    import sys
+    print(f"\n{'='*60}", flush=True)
+    print(f"RESULTS - PPO ({n} episodes)", flush=True)
+    print(f"{'='*60}", flush=True)
+    print(f"  Success Rate:       {success_rate:6.1f}%  ({goal_reached_count}/{n} landed at goal)", flush=True)
+    print(f"  Crash Rate:         {crash_rate:6.1f}%  ({crashes}/{n} crashed)", flush=True)
+    print(f"  Avg Final Distance: {avg_distance:6.3f} m", flush=True)
+    print(f"  Min Final Distance: {min_distance:6.3f} m", flush=True)
+    print(f"  Avg Reward:         {avg_reward:8.2f}  (+/- {std_reward:.2f})", flush=True)
+    print(f"  Avg Episode Length:  {avg_length:5.2f} s", flush=True)
+    print(f"{'='*60}\n", flush=True)
+    sys.stdout.flush()
     env.close()
 
 

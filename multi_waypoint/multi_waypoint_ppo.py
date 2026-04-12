@@ -401,6 +401,43 @@ class MultiWaypointNavEnv(DirectRLEnv):
     def _pre_physics_step(self, actions: torch.Tensor):
         self._actions = actions.clone().clamp(-1.0, 1.0)
 
+        # ── Auto-pilot for TAKEOFF and STABILIZE phases ──
+        altitude = self._robot.data.root_pos_w[:, 2]
+        alt_err_to_cruise = self.cfg.cruise_altitude - altitude
+
+        is_takeoff = self._phase == self.TAKEOFF
+        is_stabilize = self._phase == self.STABILIZE
+
+        takeoff_vz = torch.clamp(alt_err_to_cruise * 1.5, 0.1, 1.0)
+        self._actions[is_takeoff, 0] = 0.0
+        self._actions[is_takeoff, 1] = 0.0
+        self._actions[is_takeoff, 2] = takeoff_vz[is_takeoff]
+        self._actions[is_takeoff, 3] = 0.0
+
+        self._actions[is_stabilize, 0] = 0.0
+        self._actions[is_stabilize, 1] = 0.0
+        self._actions[is_stabilize, 2] = torch.clamp(alt_err_to_cruise[is_stabilize] * 0.5, -0.3, 0.3)
+        self._actions[is_stabilize, 3] = 0.0
+
+        # ── Auto-pilot for HOVER and LAND phases ──
+        is_hover = self._phase == self.HOVER
+        is_land = self._phase == self.LAND
+
+        delta_w = self._goal_pos_w - self._robot.data.root_pos_w
+        hover_vx = torch.clamp(delta_w[:, 0] * 0.8, -0.5, 0.5)
+        hover_vy = torch.clamp(delta_w[:, 1] * 0.8, -0.5, 0.5)
+
+        self._actions[is_hover, 0] = hover_vx[is_hover] / self.cfg.max_velocity_xy
+        self._actions[is_hover, 1] = hover_vy[is_hover] / self.cfg.max_velocity_xy
+        self._actions[is_hover, 2] = torch.clamp(alt_err_to_cruise[is_hover] * 0.5, -0.3, 0.3)
+        self._actions[is_hover, 3] = 0.0
+
+        land_vz = torch.clamp(-0.3 * torch.ones_like(altitude), -0.3, -0.1)
+        self._actions[is_land, 0] = hover_vx[is_land] / self.cfg.max_velocity_xy
+        self._actions[is_land, 1] = hover_vy[is_land] / self.cfg.max_velocity_xy
+        self._actions[is_land, 2] = land_vz[is_land]
+        self._actions[is_land, 3] = 0.0
+
         # ── Decode velocity commands from RL actions ──
         vx_cmd = self._actions[:, 0] * self.cfg.max_velocity_xy
         vy_cmd = self._actions[:, 1] * self.cfg.max_velocity_xy

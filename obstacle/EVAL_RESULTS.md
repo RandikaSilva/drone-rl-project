@@ -1,45 +1,45 @@
 # Hierarchical SAC — Evaluation Results & Version History
 
-Date: 2026-03-25 (all versions re-evaluated with 100 episodes)
+Date: 2026-04-01 (all versions re-evaluated with 100 episodes)
 Environment: 19-tree dense obstacle field, 3-5 zigzag waypoints, 10x Crazyflie
-Eval: **100 episodes each**, headless, deterministic policy
+Eval: **100 episodes each**, headless, deterministic policy, 16 envs
 
 ---
 
 ## Evaluation Results
 
-### v8 vs v7 vs v6 vs v5 vs v4 Comparison (100 episodes each)
+### v9 vs v8 vs v7 vs v6 vs v5 vs v4 Comparison (100 episodes each)
 
-| Metric               |   v4              |   v5              |   v6              |   v7              |   v8                | v8 vs v7 |
-|----------------------|-------------------|-------------------|-------------------|-------------------|---------------------|----------|
-| Success Rate         | 20.0% (20/100)    | 75.0% (75/100)    | 85.0% (85/100)    | 93.0% (93/100)    | **98.0% (98/100)**  | **+5%**  |
-| Crash Rate           | 78.0% (78/100)    | 19.0% (19/100)    | 13.0% (13/100)    | 5.0%   (5/100)    | **0.0%   (0/100)**  | **-5%**  |
-| Timeout Rate         | 2.0%  (2/100)     | 6.0%   (6/100)    | 2.0%   (2/100)    | 2.0%   (2/100)    | **2.0%   (2/100)**  | same     |
-| Waypoint Completion  | 43.1%             | 68.8%             | 70.8%             | 72.4%             | **73.2%**           | +0.8%    |
-| Avg Final Distance   | 8.271 m           | 2.461 m           | 2.098 m           | 1.242 m           | **0.632 m**         | **-0.61 m** |
-| Min Final Distance   | 0.481 m           | 0.481 m           | 0.480 m           | 0.480 m           | **0.480 m**         | —        |
-| Avg Reward           | 226.93            | 1140.02           | 1331.67           | 1474.39           | **1517.70**         | +43      |
-| Reward Std Dev       | 761.03            | 848.54            | 709.96            | 494.29            | **218.62**          | **-56%** |
-| Avg Episode Length    | 5.34 s            | 12.30 s           | 11.83 s           | 12.46 s           | **15.56 s**         | +3.10s   |
+| Metric               |   v4              |   v5              |   v6              |   v7              |   v8                |   v9                | v9 vs v8 |
+|----------------------|-------------------|-------------------|-------------------|-------------------|---------------------|---------------------|----------|
+| Success Rate         | 20.0% (20/100)    | 75.0% (75/100)    | 85.0% (85/100)    | 93.0% (93/100)    | 98.0% (98/100)      | **99.0% (99/100)**  | **+1%**  |
+| Crash Rate           | 78.0% (78/100)    | 19.0% (19/100)    | 13.0% (13/100)    | 5.0%   (5/100)    | 0.0%   (0/100)      | **0.0%   (0/100)**  | same     |
+| Timeout Rate         | 2.0%  (2/100)     | 6.0%   (6/100)    | 2.0%   (2/100)    | 2.0%   (2/100)    | 2.0%   (2/100)      | **1.0%   (1/100)**  | **-1%**  |
+| Waypoint Completion  | 43.1%             | 68.8%             | 70.8%             | 72.4%             | 73.2%               | **73.8%**           | +0.6%    |
+| Avg Final Distance   | 8.271 m           | 2.461 m           | 2.098 m           | 1.242 m           | 0.632 m             | **0.609 m**         | **-0.023m** |
+| Min Final Distance   | 0.481 m           | 0.481 m           | 0.480 m           | 0.480 m           | 0.480 m             | **0.480 m**         | —        |
+| Avg Reward           | 226.93            | 1140.02           | 1331.67           | 1474.39           | 1517.70             | **1538.39**         | +20.7    |
+| Reward Std Dev       | 761.03            | 848.54            | 709.96            | 494.29            | 218.62              | **207.31**          | **-5%**  |
+| Avg Episode Length    | 5.34 s            | 12.30 s           | 11.83 s           | 12.46 s           | 15.56 s             | **15.64 s**         | +0.08s   |
 
 ### Crashes by Phase (100 episodes each)
 
-| Phase     | v4  | v5  | v6  | v7  | v8  |
-|-----------|-----|-----|-----|-----|-----|
-| TAKEOFF   | 0   | 0   | 0   | 0   | 0   |
-| STABILIZE | 0   | 0   | 0   | 0   | 0   |
-| NAVIGATE  | 82  | 19  | 13  | 5   | **0** |
-| HOVER     | 0   | 0   | 0   | 0   | 0   |
-| LAND      | 0   | 0   | 0   | 0   | 0   |
+| Phase     | v4  | v5  | v6  | v7  | v8  | v9  |
+|-----------|-----|-----|-----|-----|-----|-----|
+| TAKEOFF   | 0   | 0   | 0   | 0   | 0   | 0   |
+| STABILIZE | 0   | 0   | 0   | 0   | 0   | 0   |
+| NAVIGATE  | 82  | 19  | 13  | 5   | **0** | **0** |
+| HOVER     | 0   | 0   | 0   | 0   | 0   | 0   |
+| LAND      | 0   | 0   | 0   | 0   | 0   | 0   |
 
 ### Crashes by Cause (100 episodes each)
 
-| Cause           | Description                                     | v4  | v5  | v6  | v7  | v8  |
-|-----------------|-------------------------------------------------|-----|-----|-----|-----|-----|
-| `hit_obstacle`  | Collided with tree trunk while flying            | 82  | 19  | 13  | 5   | **0** |
-| `too_low`       | Dropped below min flight height (ground impact)  | 0   | 0   | 0   | 0   | 0   |
-| `too_high`      | Exceeded max flight height (flew away)           | 0   | 0   | 0   | 0   | 0   |
-| `flipped`       | Drone flipped upside down (attitude loss)        | 0   | 0   | 0   | 0   | 0   |
+| Cause           | Description                                     | v4  | v5  | v6  | v7  | v8  | v9  |
+|-----------------|-------------------------------------------------|-----|-----|-----|-----|-----|-----|
+| `hit_obstacle`  | Collided with tree trunk while flying            | 82  | 19  | 13  | 5   | **0** | **0** |
+| `too_low`       | Dropped below min flight height (ground impact)  | 0   | 0   | 0   | 0   | 0   | 0   |
+| `too_high`      | Exceeded max flight height (flew away)           | 0   | 0   | 0   | 0   | 0   | 0   |
+| `flipped`       | Drone flipped upside down (attitude loss)        | 0   | 0   | 0   | 0   | 0   | 0   |
 
 ### Crash Details (Phase + Cause)
 
@@ -50,24 +50,65 @@ Eval: **100 episodes each**, headless, deterministic policy
 | v6      | 13 (13%)     | All 13: NAVIGATE → hit_obstacle |
 | v7      | 5  (5%)      | All 5:  NAVIGATE → hit_obstacle |
 | v8      | **0  (0%)**  | **No crashes** |
+| v9      | **0  (0%)**  | **No crashes** |
 
-**Key finding**: v8 achieves **zero crashes** across 100 episodes. The multi-obstacle velocity-projection safety layer completely eliminates tree collisions. The remaining 2% failure rate is timeouts only — rare waypoint configurations through dense obstacle clusters where the safety layer deflects the drone into a local loop.
+**Key finding**: v9 achieves **99% success with zero crashes** — best performance across all versions. The flight smoothing reduces timeouts from 2% to 1% by preventing velocity oscillations that could trap the drone near obstacles. The smoothed commands help the drone navigate tight corridors more cleanly.
 
 **Crash cause definitions:**
 - **hit_obstacle**: Drone entered obstacle collision radius (0.5m from trunk surface) while below trunk height. Indicates the RL agent chose a path too close to a tree trunk during navigation.
-- **too_low**: Drone altitude dropped below `min_flight_height`. Would indicate PID altitude control failure or aggressive descent. Never observed in v4-v8.
+- **too_low**: Drone altitude dropped below `min_flight_height`. Would indicate PID altitude control failure or aggressive descent. Never observed in v4-v9.
 - **too_high**: Drone exceeded `max_flight_height`. Would indicate upward control divergence. Never observed.
 - **flipped**: Projected gravity Z > 0.7 (drone nearly inverted). Would indicate catastrophic attitude loss. Never observed — PID max_tilt limit prevents this.
 
 ### Key Observations
 
-- **v8** achieves **98% success with 0% crashes** — best performance across all versions
-- **Crash rate progression**: 78% → 19% → 13% → 5% → **0%** — crashes completely eliminated
-- **Timeout rate**: Consistent 2% across v6-v8 — this is the irreducible floor from rare difficult waypoint configurations
-- **Reward std dev reduced by 56%** (494 → 219) — much more consistent performance
-- **Avg final distance** improved from 1.242m to 0.632m — drone gets much closer to goals
-- **v8 uses v6's trained checkpoint** — no retraining needed, safety layer is hardcoded
-- **Multi-obstacle safety**: Unlike v7 (single nearest obstacle), v8 handles ALL obstacles within range simultaneously, preventing the drone from dodging one obstacle into another
+- **v9** achieves **99% success with 0% crashes** — best performance across all versions
+- **Crash rate progression**: 78% → 19% → 13% → 5% → 0% → **0%** — crashes remain eliminated
+- **Timeout rate reduced**: 2% → **1%** — smoothing helps escape local loops near obstacles
+- **Reward std dev**: 761 → 849 → 710 → 494 → 219 → **207** — consistently improving
+- **Avg final distance**: 8.27 → 2.46 → 2.10 → 1.24 → 0.63 → **0.61 m** — best precision
+- **v9 uses v6's trained checkpoint** — no retraining needed, smoothing is a kinematic-layer change
+- **Flight smoothing**: Body-frame command EMA + acceleration EMA + slower HL modifier produce visually smooth, realistic drone motion while maintaining (and slightly improving) navigation performance
+
+---
+
+## Changes: v8 -> v9
+
+v9 adds **flight smoothing** on top of v8 for stable, realistic drone motion — **99% success, 0% crashes, 1% timeout**. No retraining, uses v6 checkpoint.
+
+### Summary Table
+
+| Parameter                        | v8 Value                     | v9 Value                      |
+|----------------------------------|------------------------------|-------------------------------|
+| Command smoothing                | (none — instant response)    | **Body-frame EMA, alpha=0.06 (~490ms 95% response)** |
+| Acceleration smoothing           | (none — raw finite diff)     | **EMA-filtered, alpha=0.15 (~185ms)** |
+| HL goal modifier EMA             | 0.4 (fast)                   | **0.15 (gradual avoidance turns)** |
+| Yaw rate smoothing               | (none)                       | **Smoothed with command EMA** |
+| DR features (wind, noise, etc.)  | (none)                       | **Available but disabled for v6 checkpoint** |
+| Safety layer                     | Multi-obstacle vel-projection | (identical to v8)            |
+| Rewards / architecture           | (baseline)                   | (identical to v8)            |
+| HL checkpoint                    | v6-trained (24M steps)       | **v6-trained (no retraining)** |
+
+### Detailed Explanations
+
+### 1. Body-Frame Command Smoothing (NEW)
+- **Root cause**: v8's velocity commands changed instantly when the HL goal modifier updated (10 Hz) or when the safety velocity-projection activated near obstacles. These sudden jumps caused forward-backward and left-right oscillation.
+- **Fix**: EMA filter on body-frame velocity commands (vx, vy, vz) and yaw rate with alpha=0.06.
+- **Response time**: 95% in ~490ms at 100Hz physics — matches real Crazyflie velocity response.
+- **Why body-frame**: Smoothing before body-to-world conversion prevents yaw-rotation-induced lateral oscillation. If only world-frame was smoothed, yaw changes would still swing the velocity direction.
+
+### 2. Acceleration Smoothing for Tilt (NEW)
+- **Root cause**: Tilt was computed from `(vel - prev_vel) / dt` where dt=0.01s. Dividing by 0.01 amplified any velocity change by 100x, causing tilt to snap between limits.
+- **Fix**: EMA filter on world-frame acceleration (alpha=0.15) before using for pitch/roll computation.
+- **Effect**: Smooth banking transitions instead of tilt snapping. Purely cosmetic — tilt doesn't affect actual position in kinematic mode.
+
+### 3. Slower HL Goal Modifier (0.4 → 0.15)
+- **Root cause**: alpha=0.4 meant the HL could change yaw_offset/speed_factor by 40% of the remaining distance each update (10 Hz). Near obstacles, this caused rapid direction changes.
+- **Fix**: alpha=0.15 gives gradual avoidance turns. Safety layer prevents crashes independently.
+- **Trade-off**: Slower obstacle reaction, but the velocity-projection safety layer handles emergency avoidance.
+
+### Why This Improved Success Rate (98% → 99%)
+The smoothing eliminated velocity oscillations near obstacles that could trap the drone in local loops. In v8, when the drone entered a tight corridor, the safety layer's abrupt velocity corrections could cause it to bounce back and forth, wasting time until timeout. With smoothed commands, the drone glides through corridors more cleanly, reducing timeouts from 2% to 1%.
 
 ---
 
@@ -324,6 +365,7 @@ v4 is a harder environment — same controller and rewards, but denser obstacle 
 | v6 | `obstacle/logs/hierarchical_sac_v6/crazyflie_hierarchical_obstacle_sac_v6/2026-03-23_13-42-18/hl_sac_final.zip` | 24M | |
 | v7 | Uses v6 checkpoint (no retraining) | 24M (v6) | Hardcoded safety layer only |
 | v8 | Uses v6 checkpoint (no retraining) | 24M (v6) | Multi-obstacle velocity-projection safety |
+| v9 | Uses v6 checkpoint (no retraining) | 24M (v6) | v8 safety + flight smoothing (cmd EMA + accel EMA + slower HL) |
 
 ---
 
@@ -332,6 +374,17 @@ v4 is a harder environment — same controller and rewards, but denser obstacle 
 ```bash
 cd ~/projects/isaac/IsaacLab
 source ~/projects/isaac/env_isaaclab/bin/activate
+
+# Evaluate v9 (uses v6 checkpoint + v9 smoothing + multi-obstacle safety):
+python ~/Desktop/Lasitha/drone_rl_project/drone-rl-project/obstacle/hierarchical_obstacle_sac_v9.py \
+    --mode eval \
+    --checkpoint ~/Desktop/Lasitha/drone_rl_project/drone-rl-project/obstacle/logs/hierarchical_sac_v6/crazyflie_hierarchical_obstacle_sac_v6/2026-03-23_13-42-18/hl_sac_final.zip \
+    --num_episodes 100 --num_envs 16 --headless
+
+# Play v9 (visual — smooth flight):
+python ~/Desktop/Lasitha/drone_rl_project/drone-rl-project/obstacle/hierarchical_obstacle_sac_v9.py \
+    --mode play \
+    --checkpoint ~/Desktop/Lasitha/drone_rl_project/drone-rl-project/obstacle/logs/hierarchical_sac_v6/crazyflie_hierarchical_obstacle_sac_v6/2026-03-23_13-42-18/hl_sac_final.zip
 
 # Evaluate v8 (uses v6 checkpoint + v8 multi-obstacle safety layer):
 python ~/Desktop/Lasitha/drone_rl_project/drone-rl-project/obstacle/hierarchical_obstacle_sac_v8.py \
